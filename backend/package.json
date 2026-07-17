@@ -1,0 +1,39 @@
+{
+  "name": "pathwise-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pathwise backend — Fastify + Prisma + SQLite",
+  "scripts": {
+    "predev": "tsc -p tsconfig.json",
+    "dev": "concurrently -k -n tsc,api -c blue,green \"tsc -w --preserveWatchOutput\" \"node --watch --env-file=.env dist/server.js\"",
+    "build": "tsc -p tsconfig.json",
+    "start": "node --env-file=.env dist/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio",
+    "db:seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.1",
+    "@fastify/jwt": "^9.0.1",
+    "@fastify/multipart": "^9.0.1",
+    "@prisma/client": "^6.1.0",
+    "bcryptjs": "^2.4.3",
+    "fastify": "^5.1.0",
+    "fastify-plugin": "^5.0.1",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.12.0",
+    "openai": "^4.77.0",
+    "pdfjs-dist": "^4.10.38",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.10.2",
+    "concurrently": "^10.0.3",
+    "prisma": "^6.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

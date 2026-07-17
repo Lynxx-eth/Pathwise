@@ -20,10 +20,39 @@ backend/    → Python + FastAPI backend (in progress)
 
 ## Stack
 
-- Frontend: React + TypeScript, Tailwind CSS, shadcn/ui
-- Backend: Python + FastAPI
+- Frontend: React + TypeScript, Vite, Tailwind CSS
+- Backend: Node + Fastify + Prisma (TypeScript)
 - Database: SQLite (MVP)
+- AI: swappable provider — mock (free, default) or OpenAI
+
+## Run it locally
+
+Two terminals:
+
+```bash
+# Terminal 1 — backend
+cd backend && npm install && npm run prisma:migrate && npm run dev
+
+# Terminal 2 — frontend
+cd frontend && npm install && npm run dev
+```
+
+Then open http://localhost:5173. The frontend proxies `/api` to the backend
+on port 4000.
 
 ## Status
 
-Mockup complete. Build not yet started — see `docs/pathwise-build-plan.md` Step 1 for where to begin.
+**Step 1 (Foundation) — done.** Auth, database, session handling, privacy
+screen, empty Courses home.
+
+**Step 2 (Course Intelligence Engine) — done.** Upload PDF/DOCX/PPTX → text
+extraction → AI topic extraction + emphasis weighting → per-course Knowledge
+Map. Adding more materials expands the map. AI runs against a free mock
+provider until you add an OpenAI key.
+
+**Step 3 (Courses Home) — done.** Course cards wired to real data (mastery %,
+topic count, streak), and the free-tier course cap enforced with an upsell
+screen (billing itself is deferred to Step 13).
+
+Next: **Step 4 — Mastery & Spaced Repetition Engine** (underpins Study Plan,
+Quiz, and Confidence Score). See `docs/pathwise-build-plan.md`.

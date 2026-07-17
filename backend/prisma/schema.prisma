@@ -1,0 +1,157 @@
+// Pathwise database schema
+// Provider: SQLite for MVP (per the blueprint). Note: SQLite doesn't support
+// native enums, so enum-like fields are Strings with their allowed values noted.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users & account
+// ---------------------------------------------------------------------------
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  passwordHash   String
+  name           String
+  username       String?   @unique
+
+  // Privacy statement is shown once at signup; we record acceptance.
+  privacyAcceptedAt DateTime?
+
+  // Gamification core (Step 9) — kept here so we don't remodel later.
+  xp             Int       @default(0)
+  streakCount    Int       @default(0)
+  bestStreak     Int       @default(0)
+  lastActiveDay  String?   // "YYYY-MM-DD" in the user's timezone
+  timezone       String    @default("UTC")
+
+  // Account management (Step 10): soft delete with 30-day recovery window.
+  deletedAt      DateTime?
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  courses        Course[]
+  subscription   Subscription?
+  masteries      TopicMastery[]
+
+  @@index([deletedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Courses & materials
+// ---------------------------------------------------------------------------
+
+model Course {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name          String
+  icon          String    @default("book") // keyword mapped to an icon on the frontend
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  uploads       Upload[]
+  knowledgeMap  KnowledgeMap?
+
+  @@index([userId])
+}
+
+model Upload {
+  id            String    @id @default(cuid())
+  courseId      String
+  course        Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  filename      String
+  storagePath   String    // where the file lives on disk (see storage lib)
+  mimeType      String
+  sizeBytes     Int
+
+  // "pending" | "parsing" | "processed" | "failed"
+  status        String    @default("pending")
+  extractedText String?   // raw text pulled out of the file (Step 2)
+  error         String?
+
+  createdAt     DateTime  @default(now())
+
+  @@index([courseId])
+}
+
+// One knowledge map per course; expands as materials are added.
+model KnowledgeMap {
+  id            String    @id @default(cuid())
+  courseId      String    @unique
+  course        Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  topics        Topic[]
+}
+
+model Topic {
+  id             String    @id @default(cuid())
+  knowledgeMapId String
+  knowledgeMap   KnowledgeMap @relation(fields: [knowledgeMapId], references: [id], onDelete: Cascade)
+
+  name           String
+  summary        String?
+  // Emphasis weight 0..1 — how heavily the material stresses this topic (Step 2).
+  weight         Float     @default(0.5)
+
+  createdAt      DateTime  @default(now())
+
+  masteries      TopicMastery[]
+
+  @@index([knowledgeMapId])
+}
+
+// Per-user, per-topic mastery state (Step 4). Created here so quiz/Socratic
+// signals have somewhere to write from the start.
+model TopicMastery {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topicId       String
+  topic         Topic     @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  mastery       Float     @default(0) // 0..1
+  lastReviewedAt DateTime?
+  dueAt         DateTime? // spaced-repetition next-review time
+
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([userId, topicId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Monetization (schema only for now — billing logic is Step 13)
+// ---------------------------------------------------------------------------
+
+model Subscription {
+  id            String    @id @default(cuid())
+  userId        String    @unique
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // "free" | "premium"
+  tier          String    @default("free")
+  // "monthly" | "annual" | null
+  interval      String?
+  status        String    @default("active") // active | canceled | past_due
+  provider      String?   // e.g. "stripe"
+  externalId    String?   // provider subscription id
+  currentPeriodEnd DateTime?
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
