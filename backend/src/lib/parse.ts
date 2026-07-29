@@ -1,9 +1,17 @@
 // Extract plain text from uploaded course materials (Step 2, parsing pipeline).
 // Supports PDF, DOCX, and PPTX — the only types the app accepts.
-import { readFile } from "node:fs/promises";
+//
+// Every parser library is imported dynamically inside the function that needs
+// it. They're large CJS packages, and only one of the three is ever used for a
+// given upload, so a static import would slow every boot to load two parsers
+// that won't run.
+//
+// No filesystem access here — callers hand in the bytes. That keeps parsing
+// storage-agnostic (local disk in dev, S3/R2 in production; see storage.ts).
 import { extname } from "node:path";
-import mammoth from "mammoth";
-import JSZip from "jszip";
+import { itemsToLines } from "./pdfLines.js";
+
+export { itemsToLines } from "./pdfLines.js";
 
 export type ParseKind = "pdf" | "docx" | "pptx";
 
@@ -39,16 +47,15 @@ async function parsePdf(buffer: Buffer): Promise<string> {
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
     const content = await page.getTextContent();
-    const line = content.items
-      .map((it) => ("str" in it ? (it as { str: string }).str : ""))
-      .join(" ");
-    pages.push(line);
+    // Reinstates line breaks — see pdfLines.ts for why this matters.
+    pages.push(itemsToLines(content.items));
   }
   await doc.destroy();
   return pages.join("\n");
 }
 
 async function parseDocx(buffer: Buffer): Promise<string> {
+  const mammoth = await import("mammoth");
   const { value } = await mammoth.extractRawText({ buffer });
   return value;
 }
@@ -63,6 +70,7 @@ function decodeXmlEntities(s: string): string {
 }
 
 async function parsePptx(buffer: Buffer): Promise<string> {
+  const { default: JSZip } = await import("jszip");
   const zip = await JSZip.loadAsync(buffer);
   // Slide XML files, in slide order.
   const slidePaths = Object.keys(zip.files)
@@ -75,25 +83,30 @@ async function parsePptx(buffer: Buffer): Promise<string> {
   const out: string[] = [];
   for (const path of slidePaths) {
     const xml = await zip.files[path].async("string");
-    // <a:t> holds run text in DrawingML.
-    const runs = [...xml.matchAll(/<a:t>(.*?)<\/a:t>/gs)].map((m) =>
-      decodeXmlEntities(m[1])
+    // <a:t> holds run text in DrawingML. Each paragraph (<a:p>) is a line —
+    // slide decks are mostly bullet lists, and those bullets are the topic
+    // signal, so they must not be flattened into one blob.
+    const paragraphs = [...xml.matchAll(/<a:p\b[\s\S]*?<\/a:p>/g)].map((m) =>
+      [...m[0].matchAll(/<a:t>(.*?)<\/a:t>/gs)]
+        .map((t) => decodeXmlEntities(t[1]))
+        .join("")
+        .trim()
     );
-    if (runs.length) out.push(runs.join(" "));
+    const lines = paragraphs.filter((p) => p.length > 0);
+    if (lines.length) out.push(lines.join("\n"));
   }
   return out.join("\n");
 }
 
-/** Read a saved file and extract its text. Throws on unsupported types. */
+/** Extract text from file bytes. Throws on unsupported types. */
 export async function extractText(
-  storagePath: string,
+  buffer: Buffer,
   filename: string,
   mimeType: string
 ): Promise<string> {
   const kind = kindFor(filename, mimeType);
   if (!kind) throw new Error(`Unsupported file type: ${filename} (${mimeType})`);
 
-  const buffer = await readFile(storagePath);
   switch (kind) {
     case "pdf":
       return normalize(await parsePdf(buffer));

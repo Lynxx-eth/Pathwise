@@ -20,3 +20,9 @@ backend/uploads/
 .DS_Store
 .vscode/
 .idea/
+
+# Compiled test output (npm test)
+backend/dist-test/
+
+# Local run logs
+*.log

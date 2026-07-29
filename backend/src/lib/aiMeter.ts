@@ -1,0 +1,181 @@
+// AI usage + cost metering (Step 1 item 6).
+//
+// The AI pipeline is the only part of Pathwise that costs real money per use,
+// so every call goes through here: token counts and estimated cost land in the
+// AIUsage table, and a per-user daily budget stops a runaway loop (or an
+// abusive account) from quietly running up a bill.
+//
+// Features import these wrappers, never `ai` directly — that's what keeps the
+// spend ledger complete.
+import { prisma } from "./prisma.js";
+import { env } from "./env.js";
+import { ai } from "../ai/index.js";
+import type {
+  AIResult,
+  ChatMessage,
+  ExtractedTopic,
+  MaterialVerdict,
+  QuizQuestion,
+  TokenUsage,
+} from "../ai/types.js";
+
+export type AIOperation =
+  | "extract_topics"
+  | "generate_quiz"
+  | "socratic_reply"
+  | "moderate";
+
+/** Raised when a user has burned through their daily AI budget. */
+export class AIBudgetExceededError extends Error {
+  constructor(public readonly spentCents: number) {
+    super("Daily AI limit reached for this account. It resets at midnight UTC.");
+    this.name = "AIBudgetExceededError";
+  }
+}
+
+function microUsdFor(usage: TokenUsage): number {
+  const inputUsd = (usage.promptTokens / 1_000_000) * env.AI_PRICE_INPUT_PER_MTOK;
+  const outputUsd =
+    (usage.completionTokens / 1_000_000) * env.AI_PRICE_OUTPUT_PER_MTOK;
+  return Math.round((inputUsd + outputUsd) * 1_000_000);
+}
+
+function startOfUtcDay(): Date {
+  const now = new Date();
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  );
+}
+
+/** Total micro-USD this user has spent on AI since midnight UTC. */
+export async function spentTodayMicroUsd(userId: string): Promise<number> {
+  const agg = await prisma.aIUsage.aggregate({
+    where: { userId, createdAt: { gte: startOfUtcDay() } },
+    _sum: { costMicroUsd: true },
+  });
+  return agg._sum.costMicroUsd ?? 0;
+}
+
+async function assertWithinBudget(userId: string | null): Promise<void> {
+  if (!userId || env.AI_DAILY_USER_BUDGET_CENTS <= 0) return;
+  // The mock provider is free — never gate it.
+  if (ai.name === "mock") return;
+
+  const spent = await spentTodayMicroUsd(userId);
+  const capMicro = env.AI_DAILY_USER_BUDGET_CENTS * 10_000; // cents -> micro-USD
+  if (spent >= capMicro) {
+    throw new AIBudgetExceededError(Math.round(spent / 10_000));
+  }
+}
+
+/**
+ * Run an AI call, recording tokens/cost/duration whether it succeeds or not.
+ */
+async function meter<T>(
+  operation: AIOperation,
+  userId: string | null,
+  run: () => Promise<AIResult<T>>
+): Promise<T> {
+  await assertWithinBudget(userId);
+
+  const startedAt = Date.now();
+  let usage: TokenUsage = {
+    model: env.AI_PROVIDER === "openai" ? env.OPENAI_MODEL : "mock",
+    promptTokens: 0,
+    completionTokens: 0,
+  };
+  let ok = true;
+  let error: string | null = null;
+
+  try {
+    const result = await run();
+    usage = result.usage;
+    return result.value;
+  } catch (err) {
+    ok = false;
+    error = err instanceof Error ? err.message : String(err);
+    throw err;
+  } finally {
+    // Never let a logging failure break the request that earned the money.
+    void prisma.aIUsage
+      .create({
+        data: {
+          userId,
+          provider: ai.name,
+          model: usage.model,
+          operation,
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          costMicroUsd: microUsdFor(usage),
+          durationMs: Date.now() - startedAt,
+          ok,
+          error,
+        },
+      })
+      .catch((e: unknown) => {
+        console.error("⚠️  Failed to record AI usage:", e);
+      });
+  }
+}
+
+// --- Metered wrappers around every AI capability ----------------------------
+
+export function extractTopics(
+  userId: string | null,
+  courseName: string,
+  materialText: string
+): Promise<ExtractedTopic[]> {
+  return meter("extract_topics", userId, () =>
+    ai.extractTopics(courseName, materialText)
+  );
+}
+
+export function generateQuiz(
+  userId: string | null,
+  courseName: string,
+  topics: { name: string; weight: number }[],
+  count: number
+): Promise<QuizQuestion[]> {
+  return meter("generate_quiz", userId, () =>
+    ai.generateQuiz(courseName, topics, count)
+  );
+}
+
+export function socraticReply(
+  userId: string | null,
+  courseName: string,
+  topicName: string | null,
+  history: ChatMessage[]
+): Promise<string> {
+  return meter("socratic_reply", userId, () =>
+    ai.socraticReply(courseName, topicName, history)
+  );
+}
+
+export function classifyMaterial(
+  userId: string | null,
+  courseName: string,
+  materialText: string
+): Promise<MaterialVerdict> {
+  return meter("moderate", userId, () =>
+    ai.classifyMaterial(courseName, materialText)
+  );
+}
+
+/** Aggregate spend for the ops dashboard / cost alerting. */
+export async function usageSummary(sinceDays = 7) {
+  const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+  const rows = await prisma.aIUsage.groupBy({
+    by: ["operation"],
+    where: { createdAt: { gte: since } },
+    _sum: { costMicroUsd: true, promptTokens: true, completionTokens: true },
+    _count: { _all: true },
+  });
+  return rows.map((r) => ({
+    operation: r.operation,
+    calls: r._count._all,
+    promptTokens: r._sum.promptTokens ?? 0,
+    completionTokens: r._sum.completionTokens ?? 0,
+    costUsd: Number(((r._sum.costMicroUsd ?? 0) / 1_000_000).toFixed(4)),
+  }));
+}

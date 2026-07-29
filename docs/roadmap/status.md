@@ -1,0 +1,206 @@
+# Build Plan — Status
+
+*Companion to [build-plan.md](./build-plan.md). Says what's built, where it
+lives, and what's deliberately still open. Update this alongside the code.*
+
+Last updated: 2026-07-29 (beta-prep pass)
+
+## Beta-prep pass (2026-07-29)
+
+Launch-readiness work on top of the 16 steps, closing the gaps called out in
+the previous review:
+
+- **Durable file storage** — `STORAGE_PROVIDER=s3` speaks to any S3-compatible
+  store (Cloudflare R2 free tier) via a hand-rolled SigV4 signer verified
+  against AWS's published test vectors. Local disk remains the dev default.
+- **Email notifications** — streak/review reminders now also go by email
+  (Resend), the channel that can actually bring a tester back. Per-user
+  `notifyEmail` toggle; unlocks stay in-app only.
+- **Security hardening** — JWTs now expire (30d, configurable); baseline
+  security headers on every response; multi-origin CORS; magic-byte validation
+  so a renamed executable can't enter the upload pipeline; boot-time warnings
+  for weak secrets.
+- **Cost controls** — per-session Socratic turn cap; written cost model
+  (docs/product/cost-model.md) tying the caps to actual per-operation math;
+  server-side answer-position shuffling so quiz correctness can't be
+  pattern-matched.
+- **AI prompt hardening** — topic extraction now excludes admin boilerplate,
+  dedupes, and bounds topic count; quiz generation has an explicit distractor
+  quality bar. `scripts/check-real-ai.mjs` runs a real syllabus through the
+  real provider for human judgement — **DEPLOYMENT.md step 0, still the gating
+  task before inviting testers.**
+- **Beta feedback channel** — in-app feedback box → `Feedback` table →
+  `GET /api/ops/feedback`.
+- **DEPLOYMENT.md** — the full beta deployment checklist (Render + Turso + R2 +
+  Resend + cron), including known accepted limitations.
+
+---
+
+## Summary
+
+Steps 1–15 are implemented. Step 16 is partly done (analytics, dark mode,
+loading/error/empty states and an accessibility pass are in; a full QA sweep and
+a security review are not). The frontend no longer contains demo data — every
+screen reads from the API.
+
+| Step | Status | Notes |
+|---|---|---|
+| 1 — Foundation | ✅ | CI now runs tests + a migration check. AI cost metering added. |
+| 2 — Course Intelligence | ✅ | Now reachable end-to-end from the UI; moderation runs before mapping. |
+| 3 — Courses Home | ✅ | Real data; cap enforced server-side and surfaced on the card. |
+| 4 — Mastery & spaced repetition | ✅ | `masteryModel.ts`, 20 tests. |
+| 5 — Quiz engine | ✅ | Server-side grading; answers not exposed pre-answer. |
+| 6 — Study Plan | ✅ | Quests derived per request; confidence score with 3 components. |
+| 7 — Socratic Tutor | ✅ | Leak guard + adversarial suite; guard-trip rate is monitored. |
+| 8 — Dashboard | ✅ | Heatmap + guessing-vs-understanding from real signals. |
+| 9 — Gamification | ✅ | XP, streaks, ranks, badges, streak freeze. |
+| 10 — Profile | ✅ | Editing, notification prefs, rank-gated frames, soft delete + restore. |
+| 11 — Companion + mini-game | ✅ | Leaf Match is playable; shop transacts. |
+| 12 — Notifications | ✅ | In-app inbox + timezone-aware cron sweep. Push/email is a transport swap. |
+| 13 — Monetization | ✅ | Mock + Stripe providers; webhook signature-verified. |
+| 14 — Referrals | ✅ | Prompt gated behind a first good moment. |
+| 15 — Moderation & compliance | ✅ | Upload screening, ToS versioning, data export. |
+| 16 — Polish & launch prep | 🟡 | See "Still open" below. |
+
+---
+
+## Bugs found and fixed during verification
+
+An end-to-end run against a live server (50 checks, signup through account
+deletion) surfaced three real defects that typechecking and unit tests had not:
+
+**1. PDF extraction destroyed all line structure — Step 2, high impact.**
+pdfjs returns positioned fragments; joining them with spaces collapsed each
+page into one line. With no headings or numbered items left, topic extraction
+fell back to generic placeholders, so uploading a real syllabus produced a
+knowledge map reading "Core Concepts / Key Definitions / Applications" —
+populated-looking, and containing nothing from the student's material. Since
+quizzes, the study plan and mastery all derive from that map, the entire
+downstream product was being built on placeholder topics. Fixed in
+`lib/pdfLines.ts`; the same fix was applied to PPTX slide paragraphs. After the
+fix the same syllabus yields 10 real topics, and adding a second file expands
+the map 10 → 18 with 8 genuinely new topics.
+
+**2. The dashboard hid topics a student was mid-way through — Step 8.**
+"Understanding vs guessing" bucketed only topics past 50% mastery. Anything
+attempted but below that belonged to neither bucket, and the section gated its
+own visibility on `understood + guessing > 0` — so a student who had taken
+quizzes but hadn't crossed 50% anywhere saw the panel vanish entirely. Added a
+third "still learning" bucket and an explicit `assessed` count to gate on.
+
+**3. The libsql adapter was imported unconditionally — Step 1.**
+`lib/prisma.ts` statically imported `@prisma/adapter-libsql`, loading its
+platform-specific native binary on every boot even though the adapter is only
+used when Turso is configured. A missing or mismatched binary took down local
+development, which is exactly the environment that doesn't need it. Now
+imported dynamically, only when `TURSO_DATABASE_URL` is set — and it throws
+loudly rather than silently falling back to an ephemeral local file.
+
+A fourth issue was a flaw in the test rather than the product: the smoke test
+compared mastery "before" on one topic against "after" on a different one,
+since consecutive quiz questions target different topics.
+
+---
+
+## Notable decisions made while building
+
+**Pure logic is separated from persistence.** `masteryModel.ts`,
+`progression.ts`, `planning.ts`, `gardenModel.ts`, `pdfLines.ts` and
+`stripeSignature.ts` import no database or config, so the rules that decide a
+student's mastery, streak and study plan are unit-tested directly — 121 tests,
+no fixtures, no API keys. The `*.ts` files next to them (`mastery.ts`,
+`gamification.ts`, …) are the thin read/write layers.
+
+**Tests compile with `tsc` rather than running through `tsx`.** `tsx` shells
+out to esbuild's service worker, which fails to spawn on some machines — and
+when it does, a healthy test file reports as a failure with an opaque
+`spawn UNKNOWN`. `npm test` compiles to `dist-test/` and runs Node's built-in
+runner, so a green run never depends on esbuild being able to fork.
+
+**The Socratic guard is not the prompt.** The build plan warned against "add a
+system prompt and hope". The prompt is hardened, *and* every reply is inspected
+before the student sees it. A blocked reply is regenerated once with a nudge
+naming the specific failure; if it still leaks, a safe probe is substituted.
+Session `guardTrips` is exposed in `/api/ops/metrics`, so a degrading prompt
+shows up as a rising rate rather than a support ticket.
+
+**Mastery distinguishes knowing from guessing.** A correct answer that arrives
+in under 2.5 seconds with no Socratic engagement on the topic earns a fraction
+of the credit and raises a guessing signal. That signal discounts the confidence
+score, re-prioritises the topic for re-testing, and drives the dashboard's
+"understanding vs guessing" view. It's the difference between a mastery number
+that's true and one that's flattering.
+
+**Spaced repetition never sees exam dates.** Per the blueprint. Scheduling is
+last-reviewed plus performance only.
+
+**Two currencies, deliberately separated.** Study XP grows the companion
+passively; only mini-game Garden XP buys cosmetics. Studying can't be turned
+into a shopping grind, and playing can't be mistaken for progress.
+
+**Cancelling never deletes coursework.** Dropping to free re-imposes the course
+cap on *new* courses; existing ones stay readable. Deleting a student's uploaded
+material because a card expired would be indefensible.
+
+**Billing has a mock provider.** `BILLING_PROVIDER=mock` runs the full
+upgrade → premium → cancel → revert loop with no Stripe account, so Step 13's
+definition of done is testable now. `/api/billing/mock/complete` refuses to run
+when a live provider is configured.
+
+---
+
+## Still open
+
+### Step 16 remainder
+- **Full QA pass.** Loading, error and empty states exist on every screen and
+  share components (`components/states.tsx`), but nobody has walked the whole
+  app looking for gaps.
+- **Security review.** Not done. The obvious things are in place — bcrypt,
+  hashed reset tokens, per-route rate limits, server-side quiz grading, webhook
+  signature verification, ownership checks on every resource — but that is not
+  the same as having been reviewed.
+- **Accessibility.** A pass was made: skip link, visible focus rings, real
+  `<button>`s for quiz options and tiles, labelled inputs, `aria-live` on
+  async regions, `prefers-reduced-motion` honoured. Not audited with a screen
+  reader.
+
+### Known operational gaps
+- ~~Uploads on ephemeral local disk~~ — **addressed**: set `STORAGE_PROVIDER=s3`
+  (R2/S3/B2). Local remains the dev default. Remaining sub-gap: the 30-day
+  account purge doesn't yet sweep the user's files out of the bucket.
+- **The AI pipeline runs synchronously inside the upload request.** Fine at
+  current volume, per the blueprint's "no message queue yet" call. A large PDF
+  plus a slow model can approach a request timeout.
+- ~~Notifications in-app only~~ — **addressed**: streak/review reminders also
+  send by email when `EMAIL_PROVIDER=resend`. Push still needs a mobile
+  wrapper.
+- ~~Single CORS origin~~ — **addressed**: `CORS_ORIGIN` is comma-separated.
+- **The real-AI quality check has not been run.** `scripts/check-real-ai.mjs`
+  exists precisely for this; it needs a human with an OpenAI key and ~10 real
+  syllabi. This is the gating task before inviting testers (DEPLOYMENT.md
+  step 0).
+
+### Not started (correctly)
+Everything in the plan's "Explicitly NOT in this build" list: lecturer-facing
+features, multi-language, adaptive quiz difficulty, behavioural notification
+timing, social/leaderboard features, and message-queue infrastructure.
+
+---
+
+## How to verify the definitions of done
+
+```bash
+# Step 4: mastery moves after a simulated attempt; scheduler flags due topics
+# Step 7: the adversarial leak suite
+# Step 2: PDF/PPTX line structure survives extraction
+cd backend && npm test    # 121 tests
+
+# Steps 2/3/5/6/8: end-to-end, free, no API keys (AI_PROVIDER=mock)
+cd backend && npm run dev
+cd frontend && npm run dev
+# sign up → accept privacy → add a course → upload a real syllabus →
+# open the study plan → take the quiz → watch mastery move on the dashboard
+
+# Step 13: a "real test payment" unlocks premium and reverts on cancel
+# with BILLING_PROVIDER=mock, use the upgrade screen's test-mode flow
+```

@@ -2,7 +2,8 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { ApiError } from "../lib/api";
-import { BrainIcon } from "../components/icons";
+import { LogoFull } from "../components/Logo";
+import { PasswordField } from "../components/PasswordField";
 
 export default function SignIn() {
   const { signin } = useAuth();
@@ -20,6 +21,8 @@ export default function SignIn() {
       await signin(email, password);
       navigate("/courses");
     } catch (err) {
+      // 401 always means "invalid email or password" from the backend — show
+      // that generic message rather than exposing which one was wrong.
       setError(err instanceof ApiError ? err.message : "Something went wrong.");
     } finally {
       setBusy(false);
@@ -29,8 +32,8 @@ export default function SignIn() {
   return (
     <div className="auth-wrap">
       <form className="auth-card" onSubmit={onSubmit}>
-        <div className="auth-mascot">
-          <BrainIcon cls="icon-lg" />
+        <div style={{ marginBottom: 24, display: "flex", justifyContent: "center" }}>
+          <LogoFull height={38} animated />
         </div>
         <h1 style={{ fontSize: 23, marginBottom: 6 }}>Welcome back</h1>
         <p style={{ color: "var(--ink-soft)", fontSize: 13.5, marginBottom: 26 }}>
@@ -40,31 +43,35 @@ export default function SignIn() {
         {error && <div className="form-error">{error}</div>}
 
         <div className="field">
-          <label>School email</label>
+          <label>Email</label>
           <input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@university.edu"
-            required
-          />
-        </div>
-        <div className="field">
-          <label>Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
+            placeholder="you@example.com"
+            autoComplete="email"
             required
           />
         </div>
 
-        <button
-          className="btn btn-primary btn-block"
-          style={{ marginTop: 6 }}
-          disabled={busy}
-        >
+        <PasswordField
+          label="Password"
+          value={password}
+          onChange={setPassword}
+          placeholder="••••••••"
+          autoComplete="current-password"
+        />
+
+        <div style={{ textAlign: "right", marginTop: -8, marginBottom: 16 }}>
+          <Link
+            to="/forgot-password"
+            style={{ color: "var(--ink-soft)", fontSize: 12.5, fontWeight: 600 }}
+          >
+            Forgot password?
+          </Link>
+        </div>
+
+        <button className="btn btn-primary btn-block" disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
 

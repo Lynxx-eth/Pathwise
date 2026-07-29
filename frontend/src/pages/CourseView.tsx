@@ -1,36 +1,54 @@
-// Course knowledge map (Step 2 DoD): the weighted topic list produced from
-// uploaded materials, plus the ability to add more materials later.
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+// Course knowledge map (Step 2) — real topics, weights and per-topic mastery,
+// plus adding more material to an existing course (Step 2 item 6).
+import { useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { api, ApiError } from "../lib/api";
+import { useApi } from "../lib/useApi";
 import {
-  BookIcon,
   FileIcon,
   CheckIcon,
-  AlertIcon,
   UploadIcon,
+  SparklesIcon,
+  PuzzleIcon,
+  ChartIcon,
+  AlertIcon,
 } from "../components/icons";
+import { Collapsible } from "../components/Collapsible";
+import {
+  EmptyState,
+  ErrorState,
+  InlineError,
+  SkeletonRows,
+} from "../components/states";
 
 interface Topic {
   id: string;
   name: string;
   summary: string | null;
   weight: number;
+  mastery: number;
+  due: boolean;
+  attempted: boolean;
 }
-interface UploadRow {
+
+interface Upload {
   id: string;
   filename: string;
   sizeBytes: number;
   status: string;
   error: string | null;
 }
-interface CourseDetail {
-  id: string;
-  name: string;
-  icon: string;
-  topics: Topic[];
-  uploads: UploadRow[];
+
+interface CourseResponse {
+  course: {
+    id: string;
+    name: string;
+    icon: string;
+    mastery: number;
+    topics: Topic[];
+    uploads: Upload[];
+  };
 }
 
 function emphasisLabel(weight: number): string {
@@ -39,167 +57,245 @@ function emphasisLabel(weight: number): string {
   return "Light";
 }
 
+function masteryDotColor(t: Topic): string {
+  if (!t.attempted) return "var(--ink-faint)";
+  if (t.mastery >= 70) return "var(--success)";
+  if (t.mastery >= 40) return "var(--warning)";
+  return "var(--danger)";
+}
+
 export default function CourseView() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [course, setCourse] = useState<CourseDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const { data, loading, error, reload } = useApi<CourseResponse>(
+    id ? `/api/courses/${id}` : null
+  );
+
+  async function addMaterial(file: File | undefined) {
+    if (!file || !id) return;
+    setUploading(true);
+    setUploadError(null);
     try {
-      const r = await api.get<{ course: CourseDetail }>(`/api/courses/${id}`);
-      setCourse(r.course);
+      await api.upload(`/api/courses/${id}/uploads`, file);
+      reload();
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404) navigate("/courses");
-      else setError("Couldn't load this course.");
+      setUploadError(
+        err instanceof ApiError ? err.message : "Couldn't add that file."
+      );
+    } finally {
+      setUploading(false);
+      if (inputRef.current) inputRef.current.value = "";
     }
-  }, [id, navigate]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  async function onAddFiles(files: FileList | null) {
-    if (!files || files.length === 0 || !id) return;
-    setAdding(true);
-    setError(null);
-    for (const file of Array.from(files)) {
-      try {
-        await api.upload(`/api/courses/${id}/uploads`, file);
-      } catch (err) {
-        setError(err instanceof ApiError ? err.message : "Upload failed.");
-      }
-    }
-    await load();
-    setAdding(false);
   }
 
-  if (!course) {
+  async function startQuiz(topicId?: string) {
+    if (!id) return;
+    try {
+      const res = await api.post<{ sessionId: string }>("/api/quiz/sessions", {
+        courseId: id,
+        kind: topicId ? "practice" : "practice",
+        topicId,
+      });
+      navigate(`/quiz/${res.sessionId}`);
+    } catch (err) {
+      setUploadError(
+        err instanceof ApiError ? err.message : "Couldn't start a quiz."
+      );
+    }
+  }
+
+  async function startSocratic(topicId?: string) {
+    if (!id) return;
+    try {
+      const res = await api.post<{ session: { id: string } }>(
+        "/api/socratic/sessions",
+        { courseId: id, topicId, origin: "course" }
+      );
+      navigate(`/socratic/chat/${res.session.id}`);
+    } catch (err) {
+      setUploadError(
+        err instanceof ApiError ? err.message : "Couldn't start Socratic mode."
+      );
+    }
+  }
+
+  if (loading) {
     return (
       <AppShell>
-        {error ? (
-          <p style={{ color: "var(--danger)" }}>{error}</p>
-        ) : (
-          <p style={{ color: "var(--ink-soft)" }}>Loading course…</p>
-        )}
+        <div className="skeleton" style={{ height: 22, width: 180, marginBottom: 12 }} />
+        <div className="skeleton" style={{ height: 30, width: 260, marginBottom: 24 }} />
+        <SkeletonRows rows={5} />
       </AppShell>
     );
   }
 
-  const maxWeight = Math.max(0.001, ...course.topics.map((t) => t.weight));
+  if (error || !data) {
+    return (
+      <AppShell>
+        <ErrorState message={error ?? "Course not found."} onRetry={reload} />
+      </AppShell>
+    );
+  }
+
+  const course = data.course;
 
   return (
     <AppShell>
-      <button
-        className="back-link"
-        style={{ background: "none", border: "none", cursor: "pointer", marginBottom: 14 }}
-        onClick={() => navigate("/courses")}
-      >
-        ← All courses
-      </button>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 6 }}>
-        <div className="course-icon">
-          <BookIcon cls="icon" />
-        </div>
-        <div>
-          <div className="eyebrow" style={{ marginBottom: 2 }}>
-            Knowledge map
-          </div>
-          <h2 className="section-title" style={{ margin: 0 }}>
-            {course.name}
-          </h2>
-        </div>
-      </div>
+      <div className="eyebrow">{course.name}</div>
+      <h1 className="section-title" style={{ marginBottom: 4 }}>
+        Knowledge map
+      </h1>
       <p className="section-sub">
-        {course.topics.length} topics extracted from {course.uploads.length} file
-        {course.uploads.length === 1 ? "" : "s"}, weighted by how much your material
-        emphasizes them.
+        {course.topics.length === 0
+          ? "No topics yet."
+          : `${course.topics.length} topics · ${course.mastery}% mastery`}
       </p>
 
-      {error && (
-        <div className="form-error" style={{ display: "flex", gap: 8 }}>
-          <AlertIcon cls="icon-sm" /> {error}
-        </div>
-      )}
+      <InlineError message={uploadError} />
 
-      {/* Topics */}
-      {course.topics.length === 0 ? (
-        <div className="empty-state">
-          <div className="icon-circle">
-            <UploadIcon cls="icon-lg" />
-          </div>
-          <h3 style={{ fontSize: 17, marginBottom: 6 }}>No topics yet</h3>
-          <p style={{ color: "var(--ink-soft)", fontSize: 14, maxWidth: 340, margin: "0 auto 18px" }}>
-            Add a syllabus or slide deck and Pathwise will map its topics.
-          </p>
-          <button className="btn btn-primary" onClick={() => inputRef.current?.click()} disabled={adding}>
-            {adding ? "Reading…" : "Add materials"}
-          </button>
-        </div>
-      ) : (
-        <div style={{ marginBottom: 28 }}>
-          {course.topics.map((t) => (
-            <div className="topic-row" key={t.id}>
-              <div className="t-main">
-                <div className="t-name">{t.name}</div>
-                <div className="topic-weight">
-                  <span style={{ width: `${(t.weight / maxWeight) * 100}%` }} />
+      <div style={{ display: "flex", gap: 12, marginBottom: 24, flexWrap: "wrap" }}>
+        <button
+          className="btn btn-primary"
+          onClick={() => navigate(`/study-plan/${course.id}`)}
+        >
+          Study plan
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={() => startQuiz()}
+          disabled={course.topics.length === 0}
+        >
+          <PuzzleIcon cls="icon-sm" /> Quiz
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={() => startSocratic()}
+          disabled={course.topics.length === 0}
+        >
+          <SparklesIcon cls="icon-sm" /> Socratic mode
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={() => navigate(`/progress/${course.id}`)}
+        >
+          <ChartIcon cls="icon-sm" /> Progress
+        </button>
+      </div>
+
+      <Collapsible
+        title={`Uploaded materials (${course.uploads.length})`}
+        defaultOpen={course.topics.length === 0}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {course.uploads.length === 0 && (
+            <p style={{ fontSize: 13, color: "var(--ink-soft)" }}>
+              Nothing uploaded yet.
+            </p>
+          )}
+          {course.uploads.map((u) => (
+            <div
+              key={u.id}
+              className="card"
+              style={{ display: "flex", alignItems: "center", gap: 14 }}
+            >
+              <FileIcon cls="icon-lg" style={{ color: "var(--primary-dark)" }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13.5 }}>{u.filename}</div>
+                <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                  {u.error ?? `${(u.sizeBytes / 1024 / 1024).toFixed(1)} MB`}
                 </div>
               </div>
-              <div className="topic-emphasis">{emphasisLabel(t.weight)}</div>
+              {u.status === "processed" ? (
+                <span className="pill pill-mint">
+                  <CheckIcon cls="icon-sm" /> Ready
+                </span>
+              ) : u.status === "rejected" ? (
+                <span className="pill pill-coral">Not course material</span>
+              ) : u.status === "failed" ? (
+                <span className="pill pill-coral">
+                  <AlertIcon cls="icon-sm" /> Failed
+                </span>
+              ) : (
+                <span className="pill pill-muted">{u.status}</span>
+              )}
+            </div>
+          ))}
+
+          <button
+            className="btn btn-ghost"
+            onClick={() => inputRef.current?.click()}
+            disabled={uploading}
+          >
+            <UploadIcon cls="icon-sm" />
+            {uploading ? "Processing…" : "Add more materials"}
+          </button>
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".pdf,.docx,.pptx"
+            style={{ display: "none" }}
+            onChange={(e) => addMaterial(e.target.files?.[0])}
+            aria-label="Add another course material file"
+          />
+          <p style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
+            Adding material expands your existing map — it doesn't start over.
+          </p>
+        </div>
+      </Collapsible>
+
+      <h2 style={{ fontSize: 15, margin: "22px 0 14px 0" }}>Topics found</h2>
+
+      {course.topics.length === 0 ? (
+        <EmptyState
+          icon={<UploadIcon cls="icon-lg" />}
+          title="No topics yet"
+          body="Upload a syllabus or slide deck and Pathwise will pull out the topics and weight them by how heavily your material emphasises each one."
+          action={
+            <button className="btn btn-primary" onClick={() => inputRef.current?.click()}>
+              <UploadIcon cls="icon-sm" /> Add material
+            </button>
+          }
+        />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {course.topics.map((t) => (
+            <div key={t.id} className="topic-row">
+              <span
+                className="heat-dot"
+                style={{ background: masteryDotColor(t) }}
+                aria-hidden="true"
+              />
+              <div className="t-main">
+                <div className="t-name">{t.name}</div>
+                {t.summary && (
+                  <div style={{ fontSize: 12, color: "var(--ink-soft)", marginBottom: 6 }}>
+                    {t.summary}
+                  </div>
+                )}
+                <div className="topic-weight" aria-hidden="true">
+                  <span style={{ width: `${Math.round(t.weight * 100)}%` }} />
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {t.due && <span className="pill pill-coral">Due</span>}
+                <span className="topic-emphasis">
+                  {t.attempted ? `${t.mastery}%` : emphasisLabel(t.weight)}
+                </span>
+                <button
+                  className="btn btn-ghost"
+                  style={{ fontSize: 12, padding: "7px 12px" }}
+                  onClick={() => startQuiz(t.id)}
+                >
+                  Quiz
+                </button>
+              </div>
             </div>
           ))}
         </div>
-      )}
-
-      {/* Materials */}
-      <div className="topbar" style={{ marginBottom: 12 }}>
-        <h3 style={{ fontSize: 16 }}>Materials</h3>
-        <button
-          className="btn btn-ghost"
-          style={{ padding: "8px 14px", fontSize: 13 }}
-          onClick={() => inputRef.current?.click()}
-          disabled={adding}
-        >
-          {adding ? "Reading…" : "+ Add materials"}
-        </button>
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".pdf,.docx,.pptx"
-          multiple
-          hidden
-          onChange={(e) => onAddFiles(e.target.files)}
-        />
-      </div>
-
-      {course.uploads.length === 0 ? (
-        <p style={{ color: "var(--ink-soft)", fontSize: 13.5 }}>No files yet.</p>
-      ) : (
-        course.uploads.map((u) => (
-          <div className="file-row" key={u.id}>
-            <FileIcon cls="icon-lg" style={{ color: "var(--primary-dark)" }} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="fname">{u.filename}</div>
-              <div className="fmeta">
-                {(u.sizeBytes / 1024).toFixed(0)} KB
-                {u.status === "failed" && u.error ? ` — ${u.error}` : ""}
-              </div>
-            </div>
-            {u.status === "processed" ? (
-              <span className="pill pill-mint">
-                <CheckIcon cls="icon-sm" /> Mapped
-              </span>
-            ) : u.status === "failed" ? (
-              <span className="pill pill-coral">Failed</span>
-            ) : (
-              <span className="pill pill-muted">{u.status}</span>
-            )}
-          </div>
-        ))
       )}
     </AppShell>
   );

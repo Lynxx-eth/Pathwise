@@ -1,4 +1,7 @@
-// Picks the AI provider based on env. Import `ai` anywhere you need AI.
+// Picks the AI provider based on env.
+//
+// Import the metered wrappers in lib/aiMeter.ts rather than this `ai` object
+// directly — that's what records token spend. This module is the raw provider.
 import { env } from "../lib/env.js";
 import type { AIProvider } from "./types.js";
 import { MockAIProvider } from "./mock.js";
@@ -18,4 +21,12 @@ function createProvider(): AIProvider {
 }
 
 export const ai: AIProvider = createProvider();
-export type { AIProvider } from "./types.js";
+export type {
+  AIProvider,
+  AIResult,
+  ChatMessage,
+  ExtractedTopic,
+  MaterialVerdict,
+  QuizQuestion,
+  TokenUsage,
+} from "./types.js";

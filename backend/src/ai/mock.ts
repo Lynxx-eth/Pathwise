@@ -2,10 +2,23 @@
 // end-to-end during development. Swap to OpenAI by setting AI_PROVIDER=openai.
 import type {
   AIProvider,
-  ExtractedTopic,
-  QuizQuestion,
+  AIResult,
   ChatMessage,
+  ExtractedTopic,
+  MaterialVerdict,
+  QuizQuestion,
+  TokenUsage,
 } from "./types.js";
+
+// The mock costs nothing, so it reports zero tokens. The usage row is still
+// written, which keeps the metering path exercised in development.
+function freeUsage(): TokenUsage {
+  return { model: "mock", promptTokens: 0, completionTokens: 0 };
+}
+
+function wrap<T>(value: T): AIResult<T> {
+  return { value, usage: freeUsage() };
+}
 
 // Pull candidate topic phrases out of text using simple heuristics so the
 // mock still produces course-specific output instead of fixed placeholders.
@@ -43,7 +56,7 @@ export class MockAIProvider implements AIProvider {
   async extractTopics(
     courseName: string,
     materialText: string
-  ): Promise<ExtractedTopic[]> {
+  ): Promise<AIResult<ExtractedTopic[]>> {
     const phrases = candidatePhrases(materialText);
     const base =
       phrases.length > 0
@@ -57,7 +70,7 @@ export class MockAIProvider implements AIProvider {
           ];
 
     // Weight by (fake) repetition: earlier + more-frequent phrases weigh more.
-    return base.map((name, i) => {
+    const topics = base.map((name, i) => {
       const occurrences =
         (materialText.match(new RegExp(escapeRegExp(name), "gi")) || []).length ||
         1;
@@ -68,13 +81,15 @@ export class MockAIProvider implements AIProvider {
         weight: Number(weight.toFixed(2)),
       };
     });
+
+    return wrap(topics);
   }
 
   async generateQuiz(
     courseName: string,
     topics: { name: string; weight: number }[],
     count: number
-  ): Promise<QuizQuestion[]> {
+  ): Promise<AIResult<QuizQuestion[]>> {
     const sorted = [...topics].sort((a, b) => b.weight - a.weight);
     const out: QuizQuestion[] = [];
     for (let i = 0; i < count; i++) {
@@ -96,21 +111,49 @@ export class MockAIProvider implements AIProvider {
         explanation: `This checks understanding of ${t.name}. (Mock question — enable a real AI provider for authored questions.)`,
       });
     }
-    return out;
+    return wrap(out);
   }
 
   async socraticReply(
     courseName: string,
     topicName: string | null,
     history: ChatMessage[]
-  ): Promise<string> {
+  ): Promise<AIResult<string>> {
+    void courseName;
     const lastUser = [...history].reverse().find((m) => m.role === "user");
     const focus = topicName ? ` about ${topicName}` : "";
     const probe = lastUser?.content
       ? `You said: "${lastUser.content.slice(0, 80)}". `
       : "";
     // Never a direct answer — always a guiding question.
-    return `${probe}What do you already know${focus} that might point you toward the answer? What would happen if you tried the simplest case first?`;
+    return wrap(
+      `${probe}What do you already know${focus} that might point you toward the answer? What would happen if you tried the simplest case first?`
+    );
+  }
+
+  async classifyMaterial(
+    courseName: string,
+    materialText: string
+  ): Promise<AIResult<MaterialVerdict>> {
+    void courseName;
+    // Keyword screen only — enough to exercise the reject path in dev without
+    // pretending to be real moderation.
+    const lowered = materialText.toLowerCase();
+    const banned = ["explicit sexual", "how to build a bomb", "child abuse"];
+    const hit = banned.find((b) => lowered.includes(b));
+    if (hit) {
+      return wrap({
+        verdict: "inappropriate" as const,
+        reason: `Matched a blocked phrase (${hit}).`,
+      });
+    }
+    if (materialText.trim().length < 120) {
+      return wrap({
+        verdict: "off_topic" as const,
+        reason: "Too little readable text to be course material.",
+      });
+    }
+    return wrap({ verdict: "clean" as const, reason: "Looks like course material." });
   }
 }
 

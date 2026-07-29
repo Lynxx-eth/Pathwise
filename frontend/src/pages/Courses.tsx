@@ -1,27 +1,30 @@
-// Courses home (Step 3): the multi-course grid wired to real data —
-// mastery %, topic count, streak flame — with a cap-aware "add course" card.
-import { useEffect, useState } from "react";
+// Courses home (Step 3) — real data, with the free-tier cap enforced here.
 import { useNavigate } from "react-router-dom";
 import AppShell from "../components/AppShell";
-import { api } from "../lib/api";
-import { useAuth } from "../lib/auth";
-import { BookIcon, PlusIcon, FlameIcon } from "../components/icons";
+import { useApi } from "../lib/useApi";
+import { BookIcon, PlusIcon, FlameIcon, AlertIcon } from "../components/icons";
+import { EmptyState, ErrorState, SkeletonGrid } from "../components/states";
 
-interface Course {
+interface CourseCard {
   id: string;
   name: string;
   icon: string;
   mastery: number;
   topicCount: number;
-}
-interface Meta {
-  count: number;
-  cap: number;
-  isPremium: boolean;
-  atCap: boolean;
+  dueCount: number;
+  streak: number;
 }
 
-// Mastery pill color shifts with progress, matching the design language.
+interface CoursesResponse {
+  courses: CourseCard[];
+  meta: {
+    count: number;
+    cap: number | null;
+    isPremium: boolean;
+    atCap: boolean;
+  };
+}
+
 function masteryPillClass(mastery: number): string {
   if (mastery >= 70) return "pill pill-mint";
   if (mastery >= 40) return "pill pill-green";
@@ -30,110 +33,107 @@ function masteryPillClass(mastery: number): string {
 
 export default function Courses() {
   const navigate = useNavigate();
-  const { user } = useAuth();
-  const [courses, setCourses] = useState<Course[] | null>(null);
-  const [meta, setMeta] = useState<Meta | null>(null);
+  const { data, loading, error, reload } = useApi<CoursesResponse>("/api/courses");
 
-  useEffect(() => {
-    api
-      .get<{ courses: Course[]; meta: Meta }>("/api/courses")
-      .then((r) => {
-        setCourses(r.courses);
-        setMeta(r.meta);
-      })
-      .catch(() => setCourses([]));
-  }, []);
+  function openCourse(id: string) {
+    // Remembered so the drawer's Study plan / Progress links have a target.
+    localStorage.setItem("pathwise_last_course", id);
+    navigate(`/courses/${id}`);
+  }
 
-  const streak = user?.streakCount ?? 0;
+  function addCourse() {
+    if (data?.meta.atCap) {
+      navigate("/upgrade");
+      return;
+    }
+    navigate("/courses/new");
+  }
 
   return (
     <AppShell>
-      {courses === null ? (
-        <p style={{ color: "var(--ink-soft)" }}>Loading your courses…</p>
-      ) : courses.length === 0 ? (
-        <div className="empty-state">
-          <div className="icon-circle">
-            <BookIcon cls="icon-lg" />
-          </div>
-          <h2 style={{ fontSize: 19, marginBottom: 6 }}>No courses yet</h2>
-          <p
-            style={{
-              color: "var(--ink-soft)",
-              fontSize: 14,
-              maxWidth: 360,
-              margin: "0 auto 20px",
-            }}
-          >
-            Add your first course by uploading its syllabus or slides. Pathwise
-            builds a personalized knowledge map from your own material.
-          </p>
-          <button className="btn btn-primary" onClick={() => navigate("/courses/new")}>
-            <PlusIcon cls="icon" /> Add your first course
-          </button>
-        </div>
-      ) : (
-        <>
-          {meta && !meta.isPremium && (
-            <p style={{ color: "var(--ink-faint)", fontSize: 12.5, marginBottom: 14 }}>
-              {meta.count} of {meta.cap} courses used on the free plan
-            </p>
-          )}
-          <div className="courses-grid">
-            {courses.map((c) => (
-              <div
-                key={c.id}
-                className="course-card"
-                onClick={() => navigate(`/courses/${c.id}`)}
-                style={{ cursor: "pointer" }}
-              >
-                <div className="course-icon">
-                  <BookIcon cls="icon" />
-                </div>
-                <div className="course-name">{c.name}</div>
-                <div className="course-stats-row">
-                  <span className={masteryPillClass(c.mastery)}>{c.mastery}% mastery</span>
-                  <span className="streak-badge" style={{ color: "var(--accent)" }}>
-                    <FlameIcon cls="icon-sm" /> {streak}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: "var(--ink-faint)",
-                    fontWeight: 600,
-                  }}
-                >
-                  {c.topicCount} topic{c.topicCount === 1 ? "" : "s"} mapped
-                </div>
-                <button
-                  className="btn btn-ghost"
-                  style={{ fontSize: 12, padding: "8px 14px" }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    navigate(`/courses/${c.id}`);
-                  }}
-                >
-                  View progress
-                </button>
-              </div>
-            ))}
+      <div className="eyebrow">Your courses</div>
+      <h1 className="section-title" style={{ marginBottom: 6 }}>
+        What are we studying?
+      </h1>
 
-            {meta?.atCap ? (
-              <button
-                className="add-course-card"
-                onClick={() => navigate("/upgrade")}
-                style={{ borderColor: "var(--accent)", color: "var(--accent)" }}
-              >
-                <PlusIcon cls="icon-lg" />
-                Course limit reached — see Pro
+      {loading && (
+        <div style={{ marginTop: 20 }}>
+          <SkeletonGrid cards={3} />
+        </div>
+      )}
+
+      {!loading && error && <ErrorState message={error} onRetry={reload} />}
+
+      {!loading && !error && data && (
+        <>
+          <p style={{ color: "var(--ink-faint)", fontSize: 12.5, marginBottom: 14 }}>
+            {data.meta.isPremium
+              ? `${data.meta.count} ${data.meta.count === 1 ? "course" : "courses"} · Pathwise Pro`
+              : `${data.meta.count} of ${data.meta.cap} courses used on the free plan`}
+          </p>
+
+          {data.courses.length === 0 ? (
+            <EmptyState
+              icon={<BookIcon cls="icon-lg" />}
+              title="No courses yet"
+              body="Add your first course and upload its syllabus or slides — Pathwise builds the study map from your own material."
+              action={
+                <button className="btn btn-primary" onClick={addCourse}>
+                  <PlusIcon cls="icon-sm" /> Add a course
+                </button>
+              }
+            />
+          ) : (
+            <div className="courses-grid">
+              {data.courses.map((c) => (
+                <button
+                  key={c.id}
+                  className="course-card"
+                  onClick={() => openCourse(c.id)}
+                  style={{ cursor: "pointer", textAlign: "left" }}
+                >
+                  <div className="course-icon">
+                    <BookIcon cls="icon" />
+                  </div>
+                  <div className="course-name">{c.name}</div>
+                  <div className="course-stats-row">
+                    <span className={masteryPillClass(c.mastery)}>
+                      {c.mastery}% mastery
+                    </span>
+                    <span
+                      className="streak-badge"
+                      style={{ color: "var(--accent)" }}
+                      title={`${c.streak} day streak`}
+                    >
+                      <FlameIcon cls="icon-sm" /> {c.streak}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>
+                    {c.topicCount === 0
+                      ? "No material yet — add a file"
+                      : `${c.topicCount} topics${c.dueCount > 0 ? ` · ${c.dueCount} due` : ""}`}
+                  </div>
+                </button>
+              ))}
+
+              <button className="add-course-card" onClick={addCourse}>
+                {data.meta.atCap ? (
+                  <>
+                    <AlertIcon cls="icon-lg" />
+                    Free plan limit reached
+                    <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-faint)" }}>
+                      See Pathwise Pro
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <PlusIcon cls="icon-lg" />
+                    Add a course
+                  </>
+                )}
               </button>
-            ) : (
-              <button className="add-course-card" onClick={() => navigate("/courses/new")}>
-                <PlusIcon cls="icon-lg" />
-                Add a course
-              </button>
-            )}
-          </div>
+            </div>
+          )}
         </>
       )}
     </AppShell>

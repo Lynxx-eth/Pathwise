@@ -1,29 +1,102 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
-import { env } from "./lib/env.js";
+import rateLimit from "@fastify/rate-limit";
+import { env, corsOrigins } from "./lib/env.js";
 import authPlugin from "./plugins/authenticate.js";
 import authRoutes from "./routes/auth.js";
 import courseRoutes from "./routes/courses.js";
+import quizRoutes from "./routes/quiz.js";
+import socraticRoutes from "./routes/socratic.js";
+import studyPlanRoutes from "./routes/studyPlan.js";
+import profileRoutes from "./routes/profile.js";
+import gardenRoutes from "./routes/garden.js";
+import notificationRoutes from "./routes/notifications.js";
+import billingRoutes from "./routes/billing.js";
+import referralRoutes from "./routes/referrals.js";
+import feedbackRoutes from "./routes/feedback.js";
+import opsRoutes from "./routes/ops.js";
 import { ai } from "./ai/index.js";
+import { email } from "./email/index.js";
+import { billing } from "./lib/billing.js";
+import { seedBadges } from "./lib/gamification.js";
+import { seedShopItems } from "./lib/garden.js";
 
 const app = Fastify({ logger: true });
 
-await app.register(cors, { origin: env.CORS_ORIGIN, credentials: true });
+// Accepts a comma-separated CORS_ORIGIN so local dev and the deployed
+// frontend can both talk to one API.
+await app.register(cors, { origin: corsOrigins, credentials: true });
 await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB
+
+// Baseline security headers on every response. This is a JSON API — nothing
+// here should ever be framed, sniffed into HTML, or load subresources.
+app.addHook("onSend", async (_req, reply) => {
+  reply.header("X-Content-Type-Options", "nosniff");
+  reply.header("X-Frame-Options", "DENY");
+  reply.header("Referrer-Policy", "no-referrer");
+  reply.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+  // Ignored over plain http, enforced the moment the API is behind TLS.
+  reply.header("Strict-Transport-Security", "max-age=15552000; includeSubDomains");
+});
+
+// Stripe webhook signatures are computed over the exact request bytes, so this
+// route needs the raw body preserved. Every other JSON route is unaffected.
+app.addContentTypeParser(
+  "application/json",
+  { parseAs: "string" },
+  (req, body: string, done) => {
+    if (req.url === "/api/billing/webhook") {
+      (req as unknown as { rawBody: string }).rawBody = body;
+    }
+    try {
+      done(null, body.length > 0 ? JSON.parse(body) : {});
+    } catch (err) {
+      done(err as Error, undefined);
+    }
+  }
+);
+
+// Global baseline — generous, since most routes aren't sensitive.
+// Auth, upload, AI and billing routes below set their own stricter limits.
+await app.register(rateLimit, { max: 100, timeWindow: "1 minute" });
+
 await app.register(authPlugin);
 
 await app.register(authRoutes);
 await app.register(courseRoutes);
+await app.register(quizRoutes);
+await app.register(socraticRoutes);
+await app.register(studyPlanRoutes);
+await app.register(profileRoutes);
+await app.register(gardenRoutes);
+await app.register(notificationRoutes);
+await app.register(billingRoutes);
+await app.register(referralRoutes);
+await app.register(feedbackRoutes);
+await app.register(opsRoutes);
 
 app.get("/api/health", async () => ({
   status: "ok",
   aiProvider: ai.name,
+  emailProvider: email.name,
+  billingProvider: billing.name,
 }));
+
+// Reference data the app needs before it can gate anything: badge definitions
+// and the shop catalogue. Both upserts, so this is safe on every boot.
+try {
+  await seedBadges();
+  await seedShopItems();
+} catch (err) {
+  app.log.error({ err }, "Failed to seed reference data");
+}
 
 try {
   await app.listen({ port: env.PORT, host: "0.0.0.0" });
-  app.log.info(`Pathwise backend running on :${env.PORT} (AI provider: ${ai.name})`);
+  app.log.info(
+    `Pathwise backend running on :${env.PORT} (AI: ${ai.name}, billing: ${billing.name})`
+  );
 } catch (err) {
   app.log.error(err);
   process.exit(1);

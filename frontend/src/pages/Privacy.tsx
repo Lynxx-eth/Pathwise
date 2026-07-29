@@ -2,7 +2,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
-import { ShieldIcon, LockIcon, EyeOffIcon, BrainIcon } from "../components/icons";
+import { ShieldIcon, LockIcon, EyeOffIcon } from "../components/icons";
+import { LogoMark } from "../components/Logo";
 
 const points = [
   {
@@ -41,7 +42,7 @@ export default function Privacy() {
     <div className="auth-wrap">
       <div className="auth-card" style={{ width: 440 }}>
         <div className="auth-mascot">
-          <BrainIcon cls="icon-lg" />
+          <LogoMark size={40} variant="mono" style={{ color: "white" }} />
         </div>
         <h1 style={{ fontSize: 22, marginBottom: 6 }}>A quick promise</h1>
         <p style={{ color: "var(--ink-soft)", fontSize: 13.5, marginBottom: 24 }}>
